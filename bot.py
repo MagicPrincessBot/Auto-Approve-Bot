@@ -20,7 +20,7 @@ app = Client(
 
 CHANNEL_BUTTONS = InlineKeyboardMarkup([[
     InlineKeyboardButton("🗯 Channel", url="https://t.me/bot_test_channel"),
-    InlineKeyboardButton("💬 Support", url="https://t.me/vj_bot_disscussion"),
+    InlineKeyboardButton("💬 Support", url="https://t.me/bot_test_channel"),
 ]])
 
 START_CAPTION = (
@@ -89,7 +89,7 @@ async def start(_, m: Message):
 
     add_user(m.from_user.id)
     await m.reply_photo(
-        "https://graph.org/file/d57d6f83abb6b8d0efb02.jpg",
+        "https://i.ibb.co/hx5t3dV7/chat-bot-icon-virtual-smart-600nw-2478937555.jpg",
         caption=START_CAPTION.format(m.from_user.mention, "https://t.me/telegram/153"),
         reply_markup=CHANNEL_BUTTONS,
     )
