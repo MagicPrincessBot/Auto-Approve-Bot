@@ -1,7 +1,11 @@
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from pyrogram import filters, Client, errors
 from pyrogram.errors.exceptions.flood_420 import FloodWait
-from database import add_user, add_group, all_users, all_groups, users, remove_user
+from database import (
+    add_user, add_group, all_users, all_groups,
+    users, remove_user,
+    set_custom_text, get_custom_text, clear_custom_text,
+)
 from configs import cfg
 import asyncio
 
@@ -12,12 +16,12 @@ app = Client(
     bot_token=cfg.BOT_TOKEN,
 )
 
-CHANNEL_BUTTONS = InlineKeyboardMarkup(
-    [[
-        InlineKeyboardButton("🗯 Channel", url="https://t.me/bot_test_channel"),
-        InlineKeyboardButton("💬 Support", url="https://t.me/vj_bot_disscussion"),
-    ]]
-)
+# ── Static UI ──────────────────────────────────────────────────────────────
+
+CHANNEL_BUTTONS = InlineKeyboardMarkup([[
+    InlineKeyboardButton("🗯 Channel", url="https://t.me/bot_test_channel"),
+    InlineKeyboardButton("💬 Support", url="https://t.me/vj_bot_disscussion"),
+]])
 
 START_CAPTION = (
     "**🦊 Hello {}!\n"
@@ -27,7 +31,15 @@ START_CAPTION = (
     "__Powered By : @Gentleman_09__**"
 )
 
-# ─────────────────────────────── Auto-approve ────────────────────────────────
+DEFAULT_APPROVAL_MSG = "✅ Your join request has been approved! Welcome."
+
+# ── Helper ─────────────────────────────────────────────────────────────────
+
+def _approval_text() -> str:
+    """Return the owner-defined custom text, or the hardcoded default."""
+    return get_custom_text() or DEFAULT_APPROVAL_MSG
+
+# ── Auto-approve ───────────────────────────────────────────────────────────
 
 @app.on_chat_join_request(filters.group | filters.channel)
 async def approve(_, m: Message):
@@ -35,21 +47,24 @@ async def approve(_, m: Message):
         add_group(m.chat.id)
         await app.approve_chat_join_request(m.chat.id, m.from_user.id)
         add_user(m.from_user.id)
-        await app.send_message(
-            m.from_user.id,
-            "✅ Your join request has been approved! Welcome."
-        )
+
+        # Send the DM — works even if the user never started the bot,
+        # because Telegram resolves the peer from the join-request event.
+        await app.send_message(m.from_user.id, _approval_text())
+
     except errors.PeerIdInvalid:
-        # User hasn't started the bot yet — silently skip DM
+        # Very rare edge-case: peer truly unresolvable — skip silently.
+        pass
+    except errors.UserIsBlocked:
+        # User has blocked the bot — nothing we can do.
         pass
     except Exception as err:
         print(f"[approve] {err}")
 
-# ─────────────────────────────── /start ──────────────────────────────────────
+# ── /start ─────────────────────────────────────────────────────────────────
 
 @app.on_message(filters.private & filters.command("start"))
 async def start(_, m: Message):
-    # Force-subscribe check
     try:
         await app.get_chat_member(cfg.CHID, m.from_user.id)
     except errors.UserNotParticipant:
@@ -75,19 +90,16 @@ async def start(_, m: Message):
     add_user(m.from_user.id)
     await m.reply_photo(
         "https://graph.org/file/d57d6f83abb6b8d0efb02.jpg",
-        caption=START_CAPTION.format(
-            m.from_user.mention,
-            "https://t.me/telegram/153",
-        ),
+        caption=START_CAPTION.format(m.from_user.mention, "https://t.me/telegram/153"),
         reply_markup=CHANNEL_BUTTONS,
     )
 
-# ─────────────────────────────── Callback: chk ───────────────────────────────
+# ── Callback: chk ──────────────────────────────────────────────────────────
 
 @app.on_callback_query(filters.regex("chk"))
 async def chk(_, cb: CallbackQuery):
     try:
-        await app.get_chat_member(cfg.CHID, cb.from_user.id)  # BUG FIX: was `m.from_user.id`
+        await app.get_chat_member(cfg.CHID, cb.from_user.id)
     except errors.UserNotParticipant:
         await cb.answer(
             "🙅 You haven't joined the channel yet. Join first, then tap Check Again.",
@@ -99,16 +111,13 @@ async def chk(_, cb: CallbackQuery):
         await cb.answer("Something went wrong. Try again later.", show_alert=True)
         return
 
-    add_user(cb.from_user.id)  # BUG FIX: was `m.from_user.id`
+    add_user(cb.from_user.id)
     await cb.edit_message_text(
-        text=START_CAPTION.format(
-            cb.from_user.mention,
-            "https://t.me/telegram/153",
-        ),
+        text=START_CAPTION.format(cb.from_user.mention, "https://t.me/telegram/153"),
         reply_markup=CHANNEL_BUTTONS,
     )
 
-# ─────────────────────────────── /users ──────────────────────────────────────
+# ── /users ─────────────────────────────────────────────────────────────────
 
 @app.on_message(filters.command("users") & filters.user(cfg.SUDO))
 async def stats(_, m: Message):
@@ -121,7 +130,84 @@ async def stats(_, m: Message):
         f"🔢 Total : `{u + g}`"
     )
 
-# ─────────────────────────────── /bcast ──────────────────────────────────────
+# ── Custom approval text commands (SUDO only) ──────────────────────────────
+
+@app.on_message(filters.command("addCustomText") & filters.user(cfg.SUDO))
+async def add_custom_text(_, m: Message):
+    """
+    Usage:
+      • Reply to any message  →  that message's text becomes the custom DM.
+      • Or: /addCustomText Your text here
+    Supports Markdown formatting in the text.
+    """
+    text: str | None = None
+
+    # Priority 1: replied-to message text
+    if m.reply_to_message:
+        text = m.reply_to_message.text or m.reply_to_message.caption
+
+    # Priority 2: inline text after the command
+    if not text:
+        parts = m.text.split(None, 1)
+        if len(parts) > 1:
+            text = parts[1].strip()
+
+    if not text:
+        await m.reply_text(
+            "**❌ No text provided.**\n\n"
+            "Usage:\n"
+            "• `/addCustomText Your welcome message here`\n"
+            "• Or reply to a message with `/addCustomText`\n\n"
+            "**Tip:** You can use Markdown formatting — **bold**, __italic__, `code`, etc.",
+            quote=True,
+        )
+        return
+
+    set_custom_text(text)
+    preview = text if len(text) <= 200 else text[:200] + "…"
+    await m.reply_text(
+        f"✅ **Custom approval message saved!**\n\n"
+        f"**Preview:**\n{preview}\n\n"
+        f"This message will now be sent as a DM to every approved user.",
+        quote=True,
+    )
+
+
+@app.on_message(filters.command("viewCustomText") & filters.user(cfg.SUDO))
+async def view_custom_text(_, m: Message):
+    """Show the currently active approval DM text."""
+    text = get_custom_text()
+    if text:
+        await m.reply_text(
+            f"📋 **Current custom approval message:**\n\n{text}",
+            quote=True,
+        )
+    else:
+        await m.reply_text(
+            f"ℹ️ No custom text set. Currently using the default message:\n\n"
+            f"`{DEFAULT_APPROVAL_MSG}`",
+            quote=True,
+        )
+
+
+@app.on_message(filters.command("clearCustomText") & filters.user(cfg.SUDO))
+async def clear_custom_text_cmd(_, m: Message):
+    """Remove the custom text and revert to the default approval message."""
+    existing = get_custom_text()
+    if not existing:
+        await m.reply_text(
+            "ℹ️ There is no custom text to clear. The default message is already active.",
+            quote=True,
+        )
+        return
+    clear_custom_text()
+    await m.reply_text(
+        f"🗑️ **Custom text cleared.**\n\n"
+        f"Reverted to default:\n`{DEFAULT_APPROVAL_MSG}`",
+        quote=True,
+    )
+
+# ── Broadcast helpers ──────────────────────────────────────────────────────
 
 async def _broadcast(m: Message, forward: bool = False):
     lel = await m.reply_text("`⚡️ Broadcasting...`")
@@ -171,8 +257,7 @@ async def bcast(_, m: Message):
 async def fcast(_, m: Message):
     await _broadcast(m, forward=True)
 
-
-# ─────────────────────────────── Run ─────────────────────────────────────────
+# ── Run ────────────────────────────────────────────────────────────────────
 
 print("🤖 Bot is starting...")
 app.run()
