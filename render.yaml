@@ -1,0 +1,20 @@
+services:
+  - type: worker
+    name: auto-approve-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHID
+        sync: false
+      - key: SUDO
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: PORT
+        value: 8080
